@@ -30,6 +30,7 @@ You would want to replace `name` and `source` fields. You could also change `out
 * Cleaner documentation output
 * Toml project configuration
 * Bundle [py-lua-doc](https://github.com/boolangery/py-lua-doc)
+* Generate index.html
 
 ## Motivation
 

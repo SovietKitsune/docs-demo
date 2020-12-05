@@ -31,6 +31,8 @@ You would want to replace `name` and `source` fields. You could also change `out
 * Toml project configuration
 * Bundle [py-lua-doc](https://github.com/boolangery/py-lua-doc)
 * Generate index.html
+* View source button
+* Fix functions which return multiple values
 
 ## Motivation
 

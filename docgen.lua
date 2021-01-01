@@ -282,7 +282,7 @@ if config.project.topics then
    end
 
    for file in lfs.dir(config.project.topics) do
-      if file ~= '.' or file ~= '..' then
+      if file ~= '.' and file ~= '..' then
          local f = assert(io.open(config.project.topics .. '/' .. file, 'r'))
 
          local contents = f:read('*a')

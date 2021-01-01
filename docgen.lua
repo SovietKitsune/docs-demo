@@ -277,5 +277,22 @@ for i, section in pairs(cleaned) do
 end
 
 if config.project.topics then
-   --; TODO
+   if not lfs.attributes(out .. '/topics') then
+      lfs.mkdir(out .. '/topics')
+   end
+
+   for file in lfs.dir(config.project.topics) do
+      if file ~= '.' or file ~= '..' then
+         local f = assert(io.open(config.project.topics .. '/' .. file, 'r'))
+
+         local contents = f:read('*a')
+         f:close()
+
+         local newLocation = assert(io.open(out .. '/topics/' .. file, 'w'))
+
+         newLocation:write(contents)
+
+         newLocation:close()
+      end
+   end
 end

@@ -1,314 +1,281 @@
-local markdown = require 'markdown'
+--; TODO rewrite
 
 local etlua = require 'etlua'
 local json = require 'dkjson'
-
+local toml = require 'toml'
 local lfs = require 'lfs'
 
-local rawData
+---@type raw
+local docs
 
 do
-   local f = io.open('docs.json')
-   rawData = json.decode(f:read('*a'))
+   local f = io.open('docs.json', 'r')
+
+   docs = json.decode(f:read('*a'))
+
    f:close()
 end
+
+---@type config
+local config
+
+do
+   local f = io.open('config.toml', 'r')
+
+   local rawConfig = assert(toml.parse(f:read('*a')))
+
+   f:close()
+
+   rawConfig.project = rawConfig.project or {}
+
+   rawConfig.cleaning = rawConfig.cleaning or {}
+
+   rawConfig.cleaning.forceRemove = rawConfig.cleaning.forceRemove or {}
+
+   config = rawConfig
+end
+
+local cleaned = {
+   classes = {},
+   modules = {}, -- Modules are composed of **only** functions and values, classes are kept separate
+   structures = {},
+   locations = {} -- name = category
+}
+
+local function tblSearch(tbl, v)
+   for i = 1, #tbl do
+      if tbl[i] == v then
+         return tbl[i]
+      end
+   end
+
+   return nil
+end
+
+---@param thing raw.module | raw.class
+local function isUnwanted(thing)
+   if tblSearch(config.cleaning.forceRemove, thing.name) then
+      return true
+   end
+
+   if thing.functions then
+      return thing.short_desc == '' and
+         #thing.functions == 0 and
+         #thing.data == 0
+   else
+      return thing.short_desc == '' and
+         #thing.methods == 0 and
+         #thing.fields == 0
+   end
+end
+
+---@param mod raw.module
+local function isModule(mod)
+   -- A module is determined if
+   -- 1. the module is a classmod
+   -- 2. a class description starts with `module`
+   -- 3. the module doesn't have any classes
+
+   local isMod = mod.is_class_mod or
+      #mod.classes == 0
+
+   if isMod then
+      return 'mod', mod
+   else
+      local mods = {}
+
+      for i = 1, #mod.classes do
+         local class = mod.classes[i]
+
+         if class.short_desc:match('^%s*module') then
+            table.insert(mods, {i, class, class.short_desc:gsub('^%s*module%s*', '')})
+         end
+      end
+
+      return 'class', mods
+   end
+end
+
+---@param class raw.class
+local function isStructure(class)
+   -- struct This describes...
+   local isStruct = class.short_desc:match('^%s*struct') and true or false
+
+   return isStruct, isStruct and class.short_desc:gsub('^%s*struct%s*', '') or nil
+end
+
+local function hasNil(rawType)
+   if rawType.id == 'nil' then
+      return true
+   elseif rawType.id == 'or' then
+      for i = 1, #rawType.types do
+         if hasNil(rawType.types[i]) then
+            return true
+         end
+      end
+   end
+
+   return false
+end
+
+---@param rawType raw.type
+local function toHumanType(rawType)
+   if rawType.id == 'array' then
+      return toHumanType(rawType.type) .. '[]'
+   elseif rawType.id == 'dict' then
+      return 'table<' .. toHumanType(rawType.key_type) .. ', ' .. toHumanType(rawType.value_type) .. '>'
+   elseif rawType.id == 'or' then
+      local res = ''
+      local has = hasNil(rawType)
+
+      for i = 1, #rawType.types do
+         if rawType.types[i].id ~= 'nil' then
+            res = res .. (res ~= '' and ' | ' or '') .. toHumanType(rawType.types[i]) .. (has and '?' or '')
+         end
+      end
+
+      return res
+   elseif rawType.id == 'custom' then
+      return rawType.name
+   elseif rawType.id == 'callable' then
+      local res = ''
+
+      for i = 1, #rawType.arg_types do
+         res = res .. (res ~= '' and ', ' or '') .. (rawType.arg_names[i] and rawType.arg_names[i] .. ': ' or '') .. toHumanType(rawType.arg_types[i])
+      end
+
+      local returnType = ''
+
+      for k = 1, #rawType.return_types do
+         returnType = returnType .. (returnType ~= '' and ', ' or ': ') .. toHumanType(rawType.return_types[k])
+      end
+
+      return 'function(' .. res .. ')' .. returnType
+   else
+      return rawType.id
+   end
+end
+
+for i = 1, #docs do
+   ---@type raw.module
+   local mod = docs[i]
+
+   -- Filter modules
+
+   local modType, mods = isModule(mod)
+
+   if modType == 'mod' then
+      if not isUnwanted(mod) then
+         cleaned.locations[mods.name] = 'modules'
+         table.insert(cleaned.modules, mods)
+      end
+
+      goto continue
+   else
+      for k = 1, #mods do
+         local pos = mods[k][1]
+
+         table.remove(mod.classes, pos)
+
+         if not isUnwanted(mods[k][2]) then
+            cleaned.locations[mods[k][2].name] = 'modules'
+            mods[k][2].short_desc = mods[k][3]
+            table.insert(cleaned.modules, mods[k][2])
+         end
+      end
+   end
+
+   --- Filter classes and structures apart
+
+   for k = 1, #mod.classes do
+      local class = mod.classes[k]
+      local isStruct, newDesc = isStructure(class)
+
+      if isStruct then
+         if not isUnwanted(class) then
+            class.short_desc = newDesc -- Description might be just struct, stucts have no methods or data meaning they could be removed as unwanted
+            cleaned.locations[class.name] = 'structures'
+            table.insert(cleaned.structures, class)
+         end
+      else
+         if not isUnwanted(class) then
+            cleaned.locations[class.name] = 'classes'
+            table.insert(cleaned.classes, class)
+         end
+      end
+   end
+
+   ::continue::
+end
+
+local out = config.project.output or './docs'
 
 local template
 
 do
-   local f = io.open('template.etlua')
-   template = f:read('*a')
+   local f = assert(io.open(config.project.template or 'template.etlua', 'r'))
+
+   local contents = f:read('*a')
+
+   -- local parser = etlua.Parser()
+
+   -- print(parser:compile_to_lua(contents))
+
+   template = assert(etlua.compile(contents))
+
    f:close()
 end
 
-local project = {
-   name = 'typed',
-   source = 'https://github.com/SovietKitsune/typed',
-   output = './docs',
-   inferUnwanted = true,
-   topics = {},
-   classes = {},
-   modules = {},
-   structures = {}
-}
-
-local filter = {}
-
-local out = project.output
-
-local function md(text)
-   -- text = markdown(text)
-
-   text = text:gsub('```(.-)\n(.-)```', function(lang, code)
-      return '<pre><code class="' .. lang .. '">' .. code .. '</code></pre>'
-   end)
-
-   return markdown(text)
-end
-
-local function isBlank(file)
-   return (
-      file.short_desc == "" and
-      file.desc == "" and
-      file.usage == "" and
-      #file.data == 0 and
-      #file.classes == 0 and
-      #file.functions == 0
-   )
-end
-
-local function isUnwanted(obj)
-   if not project.inferUnwanted then
-      return false
-   end
-
-   return obj.name_in_source == ''
-end
-
-local function isStructure(obj)
-   if obj.short_desc:sub(0, 6):lower() == 'struct' then
-      return true
-   end
-end
-
-local function typeResolver(obj)
-   local str = ""
-
-   if obj.id == 'or' then
-      local tbl = {}
-
-      for _, v in pairs(obj.types) do
-         table.insert(tbl, typeResolver(v))
-      end
-
-      return table.concat(tbl, ' or ')
-   elseif obj.id == 'dict' then
-      return 'table<' ..
-         typeResolver(obj.key_type) .. ', ' ..
-         typeResolver(obj.value_type) .. '>'
-   elseif obj.id == 'array' then
-      return typeResolver(obj.type) .. '[]'
-   elseif obj.id == 'custom' then
-      return obj.name
-   else
-      return obj.id
-   end
-end
-
-local function genParams(func)
-   ---@language Html 
-   local code = [[
-      <table class="table">
-         <thead class="thead-dark">
-            <tr>
-               <th scope="col">Parameter</th>
-               <th scope="col">Type</th>
-               <th scope="col">Optional</th>
-               <th scope="col">Default</th>
-               <th scope="col">Description</th>
-            </tr>
-         </thead>
-         <tbody>
-            %s
-         </tbody>
-      </table>
-   ]]
-
-   ---@language html 
-   local paramTemplate = [[
-      <tr>
-         <td>%s</td>
-         <td>%s</td>
-         <td>%s</td>
-         <td>%s</td>
-         <td>%s</td>
-      </tr>
-   ]]
-
-   local luaTypes = {
-      ['nil'] = 'https://www.lua.org/pil/2.1.html',
-      ['boolean'] = 'https://www.lua.org/pil/2.2.html',
-      ['number'] = 'https://www.lua.org/pil/2.3.html',
-      ['string'] = 'https://www.lua.org/pil/2.4.html',
-      ['table'] = 'https://www.lua.org/pil/2.5.html',
-      ['function'] = 'https://www.lua.org/pil/2.6.html',
-      ['thread'] = 'https://www.lua.org/pil/2.7.html',
-      ['userdata'] = 'https://www.lua.org/pil/2.7.html'
-   }
-
-   local check = '<i class="fas fa-check"></i>'
-   local x = '<i class="fas fa-times"></i>'
-
-   local params = ""
-
-   for _, v in pairs(func.params) do
-      local paramName = v.name
-
-      local type = typeResolver(v.type)
-
-      if paramName == '...' then
-         type = type .. '...'
-      end
-
-      local optional = x
-
-      --- TODO; add urls
-      if type:match('or nil') or v.is_opt then
-         optional = check
-      end
-
-      --- TODO; default
-      local default = 'none'
-
-      local description = v.desc == '' and 'none' or ''
-
-      params = params .. paramTemplate:format(paramName, type, optional, default, description) .. '\n'
-   end
-
-   return code:format(params)
-end
-
-local function constructorParams(func)
-   local params = ""
-
-   for i, v in pairs(func.params) do
-      local paramName = v.name
-
-      local type = typeResolver(v.type)
-
-      local optional = false
-
-      local placed = false
-
-      if type:match('or nil') or v.is_opt then
-         optional = true
-      end
-
-      if optional and not params:match('%[') then
-         params = params .. ' [, '
-         placed = true
-      end
-
-      params = params .. (i ~= 1 and not placed and ', ' or '') .. paramName
-
-      if optional and not params:match('%]') and i == #func.params then
-         params = params .. ']'
-      end
-   end
-
-   return params
-end
-
-local function paramTable(class)
-   local out = ''
-
-   local toLoop
-   local other
-   local name
-
-   if #class.methods >= #class.fields then
-      toLoop = class.methods
-      other = class.fields
-
-      name = 'methods'
-   else
-      toLoop = class.fields
-      other = class.methods
-
-      name = 'fields'
-   end
-
-   for i, v in pairs(toLoop) do
-      local otherField = other[i]
-
-      local paramsInsert = (name == 'fields' and v.name) or (otherField and otherField.name) or ''
-      local methodInsert = (name == 'methods' and v.name) or (otherField and otherField.name) or ''
-
-      paramsInsert = '<td>'  .. paramsInsert .. '</td>'
-      methodInsert = '<td>' .. methodInsert .. '</td>'
-
-      out = out .. '<tr>' .. (#class.fields > 1 and paramsInsert or '') .. '\n' .. (#class.methods > 1 and methodInsert or '') .. '\n' .. '</tr>' .. '\n'
-   end
-
-   return out
-end
-
-for _, file in pairs(rawData) do
-   if not isBlank(file) then
-
-   -- Filter out classes and group files with data or functions as modules
-
-      for _, class in pairs(file.classes) do
-         class.type = 'class'
-         class.location = '../classes/' .. class.name .. '.html'
-
-         class.short_desc = md(class.short_desc)
-         class.desc = md(class.desc)
-
-         if not isUnwanted(class) and not isStructure(class) then
-            table.insert(project.classes, class)
-         end
-
-         if isStructure(class) then
-            class.type = 'structure'
-            class.location = '../structures/' .. class.name .. '.html'
-            class.short_desc = md(class.short_desc:sub(7, #class.short_desc))
-            table.insert(project.structures, class)
-         end
-      end
-
-      -- Classes, modules same thing? Thats what Lua thinks at least
-
-      if #file.data > 0 or #file.functions > 0 then
-         local classMod = {}
-
-         classMod.name = file.name
-         classMod.type = 'module'
-         classMod.short_desc = md(file.short_desc)
-         classMod.desc = md(file.desc)
-         classMod.location = '../modules/' ..file.name .. '.html'
-         classMod.methods = file.functions
-         classMod.fields = file.data
-
-         table.insert(project.modules, classMod) -- sure it might be stored and said differently but they are the same thing lel
-      end
-   end
-end
-
-template = assert(etlua.compile(template))
+-- Create out directory
 
 if not lfs.attributes(out) then
    lfs.mkdir(out)
 end
 
-local sections = {
-   'classes',
-   'modules',
-   'structures'
-}
+-- Copy readme file
 
-for _, v in pairs(sections) do
-   print('Documenting ' .. v)
+if config.project.readme then
+   local f = assert(io.open(config.project.readme, 'r'))
 
-   if not lfs.attributes(out .. '/' .. v) then
-      lfs.mkdir(out .. '/' .. v)
-   end
+   local contents = f:read('*a')
 
-   for _, current in pairs(project[v]) do
-      local templateOut = template({
-         project = project,
-         current = current,
-         genParams = genParams,
-         constructorParams = constructorParams,
-         paramTable = paramTable,
-         typeResolver = typeResolver,
-         md = md
-      })
+   f:close()
 
-      do
-         local f = io.open(out .. '/' .. v .. '/' .. current.name .. '.html', 'w+')
-         f:write(templateOut)
+   local newLocation = assert(io.open(out .. '/index.md', 'w'))
+
+   newLocation:write(contents)
+
+   newLocation:close()
+end
+
+for i, section in pairs(cleaned) do
+   if i ~= 'locations' then
+      print('-- ' .. i .. ' --')
+
+      if not lfs.attributes(out .. '/' .. i) then
+         lfs.mkdir(out .. '/' .. i)
+      end
+
+      for mod = 1, #section do
+         local name = section[mod].name
+         print('- ' .. section[mod].name .. ' -')
+
+         local f = assert(io.open(out .. '/' .. i .. '/' .. name .. '.md', 'w'))
+
+         f:write(template {
+            currentModule = section[mod],
+            currentSection = i,
+            parseType = toHumanType,
+            locations = cleaned.locations,
+            cleaned = cleaned,
+            p = p
+         })
+
          f:close()
       end
    end
+end
+
+if config.project.topics then
+   --; TODO
 end

@@ -6,33 +6,32 @@ Experimental documentation generator alternative for [py-lua-doc](https://github
 
 First, replace `docs.json` with whatever json file [py-lua-doc](https://github.com/boolangery/py-lua-doc) generated.
 
-Next replace the project info with what your project is.
+Next replace the `config.toml` with what your project is.
 
-```lua
-local project = {
-   name = 'typed',
-   source = 'https://github.com/SovietKitsune/typed',
-   output = './docs',
-   inferUnwanted = true,
-   topics = {},
-   classes = {},
-   modules = {},
-   structures = {}
-}
+```toml
+[project]
+readme = "readme.md" # The index page
+template = "./templates/markdown.etlua" # The template to use
+output = "./docs" # Where to output the markdown
+# topics = "./topics" # Extra markdown to add
+
+[cleaning]
+forceRemove = [ # If any sort of object contains these name, it is removed
+   "get",
+   "mt"
+]
 ```
-
-You would want to replace `name` and `source` fields. You could also change `output` if you want. Changing `inferUnwanted` to false is not recommended as it will include things like examples into the documentation and try to parse them as modules instead of examples.
 
 ## TODO
 
-* Topics
-* Default parsing
-* Cleaner documentation output
-* Toml project configuration
-* Bundle [py-lua-doc](https://github.com/boolangery/py-lua-doc)
-* Generate index.html
-* View source button
-* Fix functions which return multiple values
+* [x] Topics
+* [x] Default parsing
+* [x] Cleaner documentation output
+* [x] Toml project configuration
+* [ ] Bundle [py-lua-doc](https://github.com/boolangery/py-lua-doc)
+* [ ] ~~Generate index.html~~ N/A, using markdown
+* [ ] View source button
+* [x] Fix functions which return multiple values
 
 ## Motivation
 

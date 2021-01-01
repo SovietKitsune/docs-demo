@@ -8,10 +8,10 @@ description = {
    license = "MIT"
 }
 dependencies = {
-   "markdown",
    "etlua",
    "dkjson",
-   "luafilesystem"
+   "luafilesystem",
+   "lua-toml"
 }
 build = {
    type = "builtin",

@@ -16,6 +16,11 @@ dependencies = {
 build = {
    type = "builtin",
    modules = {
-      docgen = "docgen.lua"
+      ['docgen'] = 'docgen.lua'
+   },
+   install = {
+      bin = {
+         ['py-lua-doc'] = 'bin/docgen'
+      }
    }
 }
